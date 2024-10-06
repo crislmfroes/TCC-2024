@@ -70,7 +70,7 @@ if __name__ == '__main__':
     titok_tokenizer.requires_grad_(False)
     device = "cuda"
     titok_tokenizer = titok_tokenizer.to(device)
-    llm_tokenizer: LlamaTokenizer = LlamaTokenizer.from_pretrained("meta-llama/Llama-3.2-1B")
+    llm_tokenizer: LlamaTokenizer = LlamaTokenizer.from_pretrained("meta-llama/Llama-3.2-1B", trust_remote_code=True)
     llm_tokenizer.add_tokens(get_added_tokens())
     output_dataset = {'instruction': [], 'output': []}
     with open(os.environ['ALFRED_ROOT']+'/data/splits/oct21.json', 'r') as f:

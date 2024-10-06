@@ -14,6 +14,7 @@ from datasets import Dataset
 import tqdm
 
 SPLIT = 'train'
+LIMIT = 100
 
 HIGH_LEVEL_POLICY_TOKEN = "<hl_policy>"
 LOW_LEVEL_POLICY_TOKEN = "<ll_policy>"
@@ -77,7 +78,7 @@ if __name__ == '__main__':
     output_dataset = {'instruction': [], 'output': []}
     with open(os.environ['ALFRED_ROOT']+'/data/splits/oct21.json', 'r') as f:
         dataset = json.load(f)
-    for i in tqdm.trange(len(dataset[SPLIT])):
+    for i in tqdm.trange(min(len(dataset[SPLIT]), LIMIT)):
         try:
             task = dataset[SPLIT][i]['task']
             with open(os.environ['ALFRED_ROOT']+'/data/full_2.1.0/'+SPLIT+'/'+task+'/traj_data.json', 'r') as f:

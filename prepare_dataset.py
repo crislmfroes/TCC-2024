@@ -78,85 +78,88 @@ if __name__ == '__main__':
     with open(os.environ['ALFRED_ROOT']+'/data/splits/oct21.json', 'r') as f:
         dataset = json.load(f)
     for i in tqdm.trange(len(dataset[SPLIT])):
-        task = dataset[SPLIT][i]['task']
-        with open(os.environ['ALFRED_ROOT']+'/data/full_2.1.0/'+SPLIT+'/'+task+'/traj_data.json', 'r') as f:
-            traj_data = json.load(f)
-        task_desc = traj_data['turk_annotations']['anns'][dataset[SPLIT][i]['repeat_idx']]['task_desc']
-        high_descs = traj_data['turk_annotations']['anns'][dataset[SPLIT][i]['repeat_idx']]['high_descs']
-        low_actions = traj_data['plan']['low_actions']
+        try:
+            task = dataset[SPLIT][i]['task']
+            with open(os.environ['ALFRED_ROOT']+'/data/full_2.1.0/'+SPLIT+'/'+task+'/traj_data.json', 'r') as f:
+                traj_data = json.load(f)
+            task_desc = traj_data['turk_annotations']['anns'][dataset[SPLIT][i]['repeat_idx']]['task_desc']
+            high_descs = traj_data['turk_annotations']['anns'][dataset[SPLIT][i]['repeat_idx']]['high_descs']
+            low_actions = traj_data['plan']['low_actions']
 
-        # High level policy
-        obs_act_history = ""
-        obs = ""
-        for hidx, high_desc in enumerate(high_descs+['TERMINATE',]):
-            for e in traj_data['images']:
-                if e['high_idx'] == hidx:
-                    obs = tokenize_image(img_path=os.environ['ALFRED_ROOT']+'/data/full_2.1.0/'+SPLIT+'/'+task+'/raw_images/'+e['image_name'], titok_tokenizer=titok_tokenizer)
-                    break
-            if high_desc == 'TERMINATE':
-                obs = tokenize_image(img_path=os.environ['ALFRED_ROOT']+'/data/full_2.1.0/'+SPLIT+'/'+task+'/raw_images/'+traj_data['images'][-1]['image_name'], titok_tokenizer=titok_tokenizer)
-            obs_act_history += obs
-            instruction = f"{HIGH_LEVEL_POLICY_TOKEN}{task_desc}{obs_act_history}"
-            output = f"{high_desc}"
-            output_dataset['instruction'].append(instruction)
-            output_dataset['output'].append(output)
-            obs_act_history += f"{high_desc}"
+            # High level policy
+            obs_act_history = ""
+            obs = ""
+            for hidx, high_desc in enumerate(high_descs+['TERMINATE',]):
+                for e in traj_data['images']:
+                    if e['high_idx'] == hidx:
+                        obs = tokenize_image(img_path=os.environ['ALFRED_ROOT']+'/data/full_2.1.0/'+SPLIT+'/'+task+'/raw_images/'+e['image_name'], titok_tokenizer=titok_tokenizer)
+                        break
+                if high_desc == 'TERMINATE':
+                    obs = tokenize_image(img_path=os.environ['ALFRED_ROOT']+'/data/full_2.1.0/'+SPLIT+'/'+task+'/raw_images/'+traj_data['images'][-1]['image_name'], titok_tokenizer=titok_tokenizer)
+                obs_act_history += obs
+                instruction = f"{HIGH_LEVEL_POLICY_TOKEN}{task_desc}{obs_act_history}"
+                output = f"{high_desc}"
+                output_dataset['instruction'].append(instruction)
+                output_dataset['output'].append(output)
+                obs_act_history += f"{high_desc}"
 
-        # High level world model
-        obs_act_history = ""
-        obs = ""
-        next_obs = ""
-        action = ""
-        for hidx, high_desc in enumerate(high_descs):
-            for e in traj_data['images']:
-                if e['high_idx'] == hidx:
-                    obs = tokenize_image(img_path=os.environ['ALFRED_ROOT']+'/data/full_2.1.0/'+SPLIT+'/'+task+'/raw_images/'+e['image_name'], titok_tokenizer=titok_tokenizer)
-                    break
-            for e in traj_data['images']:
-                if e['high_idx'] == hidx+1:
-                    next_obs = tokenize_image(img_path=os.environ['ALFRED_ROOT']+'/data/full_2.1.0/'+SPLIT+'/'+task+'/raw_images/'+e['image_name'], titok_tokenizer=titok_tokenizer)
-                    break
-            action = f"{high_desc}"
-            obs_act_history += obs + action
-            instruction = f"{HIGH_LEVEL_WORLD_MODEL_TOKEN}{task_desc}{obs_act_history}"
-            output = next_obs
-            output_dataset['instruction'].append(instruction)
-            output_dataset['output'].append(output)
+            # High level world model
+            obs_act_history = ""
+            obs = ""
+            next_obs = ""
+            action = ""
+            for hidx, high_desc in enumerate(high_descs):
+                for e in traj_data['images']:
+                    if e['high_idx'] == hidx:
+                        obs = tokenize_image(img_path=os.environ['ALFRED_ROOT']+'/data/full_2.1.0/'+SPLIT+'/'+task+'/raw_images/'+e['image_name'], titok_tokenizer=titok_tokenizer)
+                        break
+                for e in traj_data['images']:
+                    if e['high_idx'] == hidx+1:
+                        next_obs = tokenize_image(img_path=os.environ['ALFRED_ROOT']+'/data/full_2.1.0/'+SPLIT+'/'+task+'/raw_images/'+e['image_name'], titok_tokenizer=titok_tokenizer)
+                        break
+                action = f"{high_desc}"
+                obs_act_history += obs + action
+                instruction = f"{HIGH_LEVEL_WORLD_MODEL_TOKEN}{task_desc}{obs_act_history}"
+                output = next_obs
+                output_dataset['instruction'].append(instruction)
+                output_dataset['output'].append(output)
 
-        # High level reward model
-        obs_act_history = ""
-        obs = ""
-        for hidx, high_desc in enumerate(high_descs+['TERMINATE',]):
-            for e in traj_data['images']:
-                if e['high_idx'] == hidx:
-                    obs = tokenize_image(img_path=os.environ['ALFRED_ROOT']+'/data/full_2.1.0/'+SPLIT+'/'+task+'/raw_images/'+e['image_name'], titok_tokenizer=titok_tokenizer)
-                    break
-            if high_desc == 'TERMINATE':
-                obs = tokenize_image(img_path=os.environ['ALFRED_ROOT']+'/data/full_2.1.0/'+SPLIT+'/'+task+'/raw_images/'+traj_data['images'][-1]['image_name'], titok_tokenizer=titok_tokenizer)
-            obs_act_history += obs
-            reward = hidx - len(high_desc) + 1
-            instruction = f"{HIGH_LEVEL_REWARD_MODEL_TOKEN}{task_desc}{obs_act_history}"
-            output = tokenize_reward(reward)
-            output_dataset['instruction'].append(instruction)
-            output_dataset['output'].append(output)
-            obs_act_history += f"{high_desc}"
+            # High level reward model
+            obs_act_history = ""
+            obs = ""
+            for hidx, high_desc in enumerate(high_descs+['TERMINATE',]):
+                for e in traj_data['images']:
+                    if e['high_idx'] == hidx:
+                        obs = tokenize_image(img_path=os.environ['ALFRED_ROOT']+'/data/full_2.1.0/'+SPLIT+'/'+task+'/raw_images/'+e['image_name'], titok_tokenizer=titok_tokenizer)
+                        break
+                if high_desc == 'TERMINATE':
+                    obs = tokenize_image(img_path=os.environ['ALFRED_ROOT']+'/data/full_2.1.0/'+SPLIT+'/'+task+'/raw_images/'+traj_data['images'][-1]['image_name'], titok_tokenizer=titok_tokenizer)
+                obs_act_history += obs
+                reward = hidx - len(high_desc) + 1
+                instruction = f"{HIGH_LEVEL_REWARD_MODEL_TOKEN}{task_desc}{obs_act_history}"
+                output = tokenize_reward(reward)
+                output_dataset['instruction'].append(instruction)
+                output_dataset['output'].append(output)
+                obs_act_history += f"{high_desc}"
 
-        # Low level policy
-        obs_act_history = ""
-        obs = ""
-        for lidx, low_action in enumerate(low_actions):
-            for e in traj_data['images']:
-                if e['low_idx'] == lidx:
-                    obs = tokenize_image(img_path=os.environ['ALFRED_ROOT']+'/data/full_2.1.0/'+SPLIT+'/'+task+'/raw_images/'+e['image_name'], titok_tokenizer=titok_tokenizer)
-                    break
-            obs_act_history += obs
-            high_desc = high_descs[low_action['high_idx']]
-            instruction = f"{LOW_LEVEL_POLICY_TOKEN}{high_desc}{obs_act_history}"
-            action = tokenize_action(low_action['discrete_action'], is_terminal=(lidx == len(low_actions)-1) or (low_action['high_idx'] != low_actions[lidx+1]['high_idx']))
-            output = action
-            output_dataset['instruction'].append(instruction)
-            output_dataset['output'].append(output)
-            obs_act_history += action
+            # Low level policy
+            obs_act_history = ""
+            obs = ""
+            for lidx, low_action in enumerate(low_actions):
+                for e in traj_data['images']:
+                    if e['low_idx'] == lidx:
+                        obs = tokenize_image(img_path=os.environ['ALFRED_ROOT']+'/data/full_2.1.0/'+SPLIT+'/'+task+'/raw_images/'+e['image_name'], titok_tokenizer=titok_tokenizer)
+                        break
+                obs_act_history += obs
+                high_desc = high_descs[low_action['high_idx']]
+                instruction = f"{LOW_LEVEL_POLICY_TOKEN}{high_desc}{obs_act_history}"
+                action = tokenize_action(low_action['discrete_action'], is_terminal=(lidx == len(low_actions)-1) or (low_action['high_idx'] != low_actions[lidx+1]['high_idx']))
+                output = action
+                output_dataset['instruction'].append(instruction)
+                output_dataset['output'].append(output)
+                obs_act_history += action
+        except BaseException as e:
+            print(e.with_traceback())
     
     
     Dataset.from_dict(mapping=dataset, split=SPLIT).push_to_hub("crislmfroes/AlphaHome-ALFRED", private=True)

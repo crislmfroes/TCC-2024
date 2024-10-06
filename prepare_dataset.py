@@ -11,6 +11,7 @@ from transformers import AutoTokenizer
 import json
 import math
 from datasets import Dataset
+import tqdm
 
 SPLIT = 'train'
 

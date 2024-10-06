@@ -160,7 +160,7 @@ if __name__ == '__main__':
                 output_dataset['output'].append(output)
                 obs_act_history += action
         except BaseException as e:
-            print(e.with_traceback())
+            print(e)
     
     
     Dataset.from_dict(mapping=output_dataset, split=SPLIT).push_to_hub("crislmfroes/AlphaHome-ALFRED", private=True)

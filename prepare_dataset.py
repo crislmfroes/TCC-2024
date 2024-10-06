@@ -23,7 +23,7 @@ OBS_BEGIN_TOKEN = "<obs>"
 OBS_END_TOKEN = "</obs>"
 
 def load_image(img_path: str):
-    return torch.from_numpy(np.array(Image.open(img_path)).astype(np.float32)).permute(2, 0, 1).unsqueeze(0) / 255.0
+    return torch.from_numpy(np.array(Image.open(img_path).resize((256,256))).astype(np.float32)).permute(2, 0, 1).unsqueeze(0) / 255.0
 
 def tokenize_image(img_path: str, titok_tokenizer: TiTok):
     img_path = img_path.replace('.png', '.jpg')

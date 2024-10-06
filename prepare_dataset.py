@@ -14,7 +14,7 @@ from datasets import Dataset
 import tqdm
 
 SPLIT = 'train'
-LIMIT = 100
+LIMIT = 10
 
 HIGH_LEVEL_POLICY_TOKEN = "<hl_policy>"
 LOW_LEVEL_POLICY_TOKEN = "<ll_policy>"
@@ -163,5 +163,5 @@ if __name__ == '__main__':
             print(e.with_traceback())
     
     
-    Dataset.from_dict(mapping=dataset, split=SPLIT).push_to_hub("crislmfroes/AlphaHome-ALFRED", private=True)
+    Dataset.from_dict(mapping=output_dataset, split=SPLIT).push_to_hub("crislmfroes/AlphaHome-ALFRED-10", private=True)
     llm_tokenizer.push_to_hub("crislmfroes/AlphaHome-Llama-3.2-1B", private=True)

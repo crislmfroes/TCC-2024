@@ -1,6 +1,6 @@
 import os
 import sys
-sys.path.append(os.environ['1D_TOKENIZER_ROOT'])
+sys.path.append(os.environ['TITOK_TOKENIZER_ROOT'])
 sys.path.append(os.environ['ALFRED_ROOT'])
 sys.path.append(os.environ['ALFRED_ROOT']+'/gen')
 from modeling.titok import TiTok

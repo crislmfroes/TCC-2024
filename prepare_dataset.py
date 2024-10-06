@@ -27,7 +27,7 @@ def load_image(img_path: str):
 
 def tokenize_image(img_path: str, titok_tokenizer: TiTok):
     img_path = img_path.replace('.png', '.jpg')
-    image = load_image(img_path).to(titok_tokenizer.device)
+    image = load_image(img_path).to(device)
     image_tokens = titok_tokenizer.encode(image.to(device))[1]["min_encoding_indices"].cpu().numpy().flatten()
     image_tokens_str = OBS_BEGIN_TOKEN + "".join([f"<obs_{i}>" for i in image_tokens]) + OBS_END_TOKEN
     return image_tokens_str

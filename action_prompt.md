@@ -14,10 +14,7 @@ You are a general purpose service robot operating inside a house
 
 - You can carry at most 1 object at a time
 - Avoid unecessary interactions with the environment
-
-### Example
-
-{example}
+- You must navigate to appliances, before using them
 
 ### Observation/Action History
 

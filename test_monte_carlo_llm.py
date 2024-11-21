@@ -34,6 +34,7 @@ import pandas as pd
 from uuid import uuid4
 
 single_model = True
+use_world_model = True
 
 if single_model == True:
     mllm = outlines.models.transformers(
@@ -212,7 +213,8 @@ for i in tqdm.trange(192):
             image = Image.fromarray(env.get_frames()[0][:,:,::-1])
             image_uuid = str(uuid4())
             image_path = f'./images/{image_uuid}.jpg'
-            image.save(image_path)
+            if save_dataset == True:
+                image.save(image_path)
             def child_finder(node: Node, montecarlo: MonteCarlo, start=False, available_actions=[]):    
                 global actor_data, wm_data, rm_data, stop_data
                 action_prompt = action_prompt_template.format(example=json.dumps(current_example), previous_actions=json.dumps(node.state), task=task)
@@ -220,41 +222,43 @@ for i in tqdm.trange(192):
                     action_prompt += f"\n\n### Available Actions\n\n{available_actions}"
                 actions: List[Action] = action_generator([action_prompt,]*n_actions_sampled)
                 print('.', end='')
-                '''observation_prompts = []
-                for n in range(min(n_actions_sampled, len(actions))):
-                        action = actions[n]
-                        observation_prompts += [world_model_prompt_template.format(example=json.dumps(current_example), previous_actions=json.dumps([{'think': e['think'], 'action': e['action'], 'observation': e['observation']} for e in node.state]), current_action=action.action_choice),]
-                        actor_data['prompt'] += [action_prompt,]
-                        actor_data['completion'] += [action.model_dump_json(),]
-                        actor_data['image'] += [image_path,]
-                observations: List[Observation] = observation_generator(observation_prompts)
-                child_nodes = []
-                reward_prompts = []
-                for n, observation in enumerate(observations):
-                    next_world_state = node.state + [{
-                                'think': action.think,
-                                #'plan': action.plan,
-                                'action': action.action_choice,
-                                'observation': observation.observation
-                    }]
-                    wm_data['prompt'] += [observation_prompts[n]]
-                    wm_data['completion'] += [observation.model_dump_json()]
-                    wm_data['image'] += [image_path,]
-                    child = Node(next_world_state)
-                    child_nodes.append(child)
-                    reward_prompts += [value_estimation_prompt_template.format(previous_actions=next_world_state),]'''
-                child_nodes = []
-                reward_prompts = []
-                for n, action in enumerate(actions):
-                    next_world_state = node.state + [{
-                                'think': action.think,
-                                #'plan': action.plan,
-                                'action': action.action_choice,
-                                #'observation': observation.observation
-                    }]
-                    child = Node(next_world_state)
-                    child_nodes.append(child)
-                    reward_prompts += [value_estimation_prompt_template.format(previous_actions=next_world_state),]
+                if use_world_model == True:
+                    observation_prompts = []
+                    for n in range(min(n_actions_sampled, len(actions))):
+                            action = actions[n]
+                            observation_prompts += [world_model_prompt_template.format(example=json.dumps(current_example), previous_actions=json.dumps([{'think': e['think'], 'action': e['action'], 'observation': e['observation']} for e in node.state]), current_action=action.action_choice),]
+                            actor_data['prompt'] += [action_prompt,]
+                            actor_data['completion'] += [action.model_dump_json(),]
+                            actor_data['image'] += [image_path,]
+                    observations: List[Observation] = observation_generator(observation_prompts)
+                    child_nodes = []
+                    reward_prompts = []
+                    for n, observation in enumerate(observations):
+                        next_world_state = node.state + [{
+                                    'think': action.think,
+                                    #'plan': action.plan,
+                                    'action': action.action_choice,
+                                    'observation': observation.observation
+                        }]
+                        wm_data['prompt'] += [observation_prompts[n]]
+                        wm_data['completion'] += [observation.model_dump_json()]
+                        wm_data['image'] += [image_path,]
+                        child = Node(next_world_state)
+                        child_nodes.append(child)
+                        reward_prompts += [value_estimation_prompt_template.format(previous_actions=next_world_state),]
+                else:
+                    child_nodes = []
+                    reward_prompts = []
+                    for n, action in enumerate(actions):
+                        next_world_state = node.state + [{
+                                    'think': action.think,
+                                    #'plan': action.plan,
+                                    'action': action.action_choice,
+                                    #'observation': observation.observation
+                        }]
+                        child = Node(next_world_state)
+                        child_nodes.append(child)
+                        reward_prompts += [value_estimation_prompt_template.format(previous_actions=next_world_state),]
                 rewards: List[Reward] = reward_generator(reward_prompts)
                 for n in range(len(rewards)):
                     rm_data['prompt'] += [reward_prompts[n]]
@@ -327,7 +331,7 @@ for i in tqdm.trange(192):
             #})
             obs, scores, dones, infos = env.step([action])
             if 'nothing happens' in obs[0].lower():
-                obs = tuple([f'Invalid action: {action}. Choose one of the following actions instead: {",".join(info["admissible_commands"][0])}'])
+                obs = tuple([f'Invalid action: {action}. Choose one of the following actions instead: {", ".join(info["admissible_commands"][0])}'])
             world_state.append({
                 'think': thought,
                 'action': action,

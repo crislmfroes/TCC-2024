@@ -31,12 +31,13 @@ from montecarlo.node import Node
 import time
 from threading import Thread, Event
 import pandas as pd
+from uuid import uuid4
 
 single_model = True
 
 if single_model == True:
     mllm = outlines.models.transformers(
-        "Qwen/Qwen2.5-14B-Instruct-AWQ",
+        "Qwen/Qwen2.5-7B-Instruct-AWQ",
         #"OpenGVLab/InternVL2-1B",
         #model_class=Qwen2VLForConditionalGeneration,
         #model_class=AutoModel,
@@ -69,20 +70,33 @@ env_type = config['env']['type'] # 'AlfredTWEnv' or 'AlfredThorEnv' or 'AlfredHy
 
 actor_data = {
     'prompt': [],
-    'completion': []
+    'completion': [],
+    'label': [],
+    'image': [],
 }
 wm_data = {
     'prompt': [],
-    'completion': []
+    'completion': [],
+    'label': [],
+    'image': [],
 }
 rm_data = {
     'prompt': [],
-    'completion': []
+    'completion': [],
+    'label': [],
+    'image': [],
 }
 stop_data = {
     'prompt': [],
-    'completion': []
+    'completion': [],
+    'label': [],
+    'image': [],
 }
+
+last_len_actor_data = len(actor_data['prompt'])
+last_len_wm_data = len(wm_data['prompt'])
+last_len_rm_data = len(rm_data['prompt'])
+last_len_stop_data = len(stop_data['prompt'])
 
 # setup environment
 env = getattr(environment, env_type)(config, train_eval='eval_out_of_distribution')
@@ -107,7 +121,8 @@ with open('example.json', 'r') as f:
 for k in example.keys():
     example[k] = []#example[k][:10]
 task_types = ['put', 'clean', 'heat', 'cool', 'put two', 'examine'][::-1]
-for i in tqdm.trange(10):
+episodes = 0
+for i in tqdm.trange(192):
     done = False
     obs, info = env.reset()
     print(obs[0].split('\n\n'))
@@ -176,6 +191,7 @@ for i in tqdm.trange(10):
                 action_choice: str# = Field()
             
             class Observation(BaseModel):
+                #think: str
                 observation: str# = Field()
 
             class Reward(BaseModel):
@@ -183,6 +199,7 @@ for i in tqdm.trange(10):
                 score: int# = Field()
 
             class TaskStatus(BaseModel):
+                #think: str
                 task_completed: bool = Field()
 
             montecarlo = MonteCarlo(Node(state=world_state))
@@ -192,7 +209,10 @@ for i in tqdm.trange(10):
             observation_generator = outlines.generate.json(mllm_world_model, Observation)#, outlines.samplers.greedy())
             reward_generator = outlines.generate.json(mllm_reward_model, Reward)#, outlines.samplers.greedy())
             success_detector = outlines.generate.json(mllm_success_detector, TaskStatus)#, outlines.samplers.greedy())
-
+            image = Image.fromarray(env.get_frames()[0][:,:,::-1])
+            image_uuid = str(uuid4())
+            image_path = f'./images/{image_uuid}.jpg'
+            image.save(image_path)
             def child_finder(node: Node, montecarlo: MonteCarlo, start=False, available_actions=[]):    
                 global actor_data, wm_data, rm_data, stop_data
                 action_prompt = action_prompt_template.format(example=json.dumps(current_example), previous_actions=json.dumps(node.state), task=task)
@@ -200,12 +220,13 @@ for i in tqdm.trange(10):
                     action_prompt += f"\n\n### Available Actions\n\n{available_actions}"
                 actions: List[Action] = action_generator([action_prompt,]*n_actions_sampled)
                 print('.', end='')
-                observation_prompts = []
+                '''observation_prompts = []
                 for n in range(min(n_actions_sampled, len(actions))):
                         action = actions[n]
                         observation_prompts += [world_model_prompt_template.format(example=json.dumps(current_example), previous_actions=json.dumps([{'think': e['think'], 'action': e['action'], 'observation': e['observation']} for e in node.state]), current_action=action.action_choice),]
                         actor_data['prompt'] += [action_prompt,]
                         actor_data['completion'] += [action.model_dump_json(),]
+                        actor_data['image'] += [image_path,]
                 observations: List[Observation] = observation_generator(observation_prompts)
                 child_nodes = []
                 reward_prompts = []
@@ -218,6 +239,19 @@ for i in tqdm.trange(10):
                     }]
                     wm_data['prompt'] += [observation_prompts[n]]
                     wm_data['completion'] += [observation.model_dump_json()]
+                    wm_data['image'] += [image_path,]
+                    child = Node(next_world_state)
+                    child_nodes.append(child)
+                    reward_prompts += [value_estimation_prompt_template.format(previous_actions=next_world_state),]'''
+                child_nodes = []
+                reward_prompts = []
+                for n, action in enumerate(actions):
+                    next_world_state = node.state + [{
+                                'think': action.think,
+                                #'plan': action.plan,
+                                'action': action.action_choice,
+                                #'observation': observation.observation
+                    }]
                     child = Node(next_world_state)
                     child_nodes.append(child)
                     reward_prompts += [value_estimation_prompt_template.format(previous_actions=next_world_state),]
@@ -225,6 +259,7 @@ for i in tqdm.trange(10):
                 for n in range(len(rewards)):
                     rm_data['prompt'] += [reward_prompts[n]]
                     rm_data['completion'] += [rewards[n].model_dump_json()]
+                    rm_data['image'] += [image_path,]
                     child: Node = child_nodes[n]
                     reward: Reward = rewards[n]
                     child.policy_value = min(1.0, max(0.0, float(reward.score/10.0)))
@@ -234,6 +269,7 @@ for i in tqdm.trange(10):
                 task_status: TaskStatus = success_detector(success_prompt)
                 stop_data['prompt'] += [success_prompt,]
                 stop_data['completion'] += [task_status.model_dump_json()]
+                stop_data['image'] += [image_path,]
                 #print('--------')
                 #print(task_status)
                 #print('--------')
@@ -303,17 +339,27 @@ for i in tqdm.trange(10):
             counter += 1
         if counter < (50):
             success += 1
+        episodes += 1
     except BaseException as e:
         print(e)
         if isinstance(e, KeyboardInterrupt):
             break
-    print(f'success rate: {success/(i+1)}')
+    if episodes > 0:
+        print(f'success rate: {success/(episodes)}')
     print(f'reward: {score}')
     print(f'env steps: {counter}')
     if save_dataset == True:
+        actor_data['label'] += [counter < 50,] * (len(actor_data['prompt']) - last_len_actor_data)
+        wm_data['label'] += [counter < 50,] * (len(wm_data['prompt']) - last_len_wm_data)
+        rm_data['label'] += [counter < 50,] * (len(rm_data['prompt']) - last_len_rm_data)
+        stop_data['label'] += [counter < 50,] * (len(stop_data['prompt']) - last_len_stop_data)
         pd.DataFrame.from_dict(data=actor_data).to_csv('./actor_dataset/train.csv', sep=';')
         pd.DataFrame.from_dict(data=wm_data).to_csv('./world_model_dataset/train.csv', sep=';')
         pd.DataFrame.from_dict(data=rm_data).to_csv('./reward_model_dataset/train.csv', sep=';')
         pd.DataFrame.from_dict(data=stop_data).to_csv('./success_detector_dataset/train.csv', sep=';')
+        last_len_actor_data = len(actor_data['prompt'])
+        last_len_wm_data = len(wm_data['prompt'])
+        last_len_rm_data = len(rm_data['prompt'])
+        last_len_stop_data = len(stop_data['prompt'])
     
     

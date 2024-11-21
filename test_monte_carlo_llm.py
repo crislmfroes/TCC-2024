@@ -32,6 +32,7 @@ import time
 from threading import Thread, Event
 import pandas as pd
 from uuid import uuid4
+import wandb
 
 single_model = True
 use_world_model = True
@@ -123,6 +124,7 @@ for k in example.keys():
     example[k] = []#example[k][:10]
 task_types = ['put', 'clean', 'heat', 'cool', 'put two', 'examine'][::-1]
 episodes = 0
+run = wandb.init(name=f"AlphaHome-alfred-thor-world-val-unseen-breadth-{n_actions_sampled}-depth-{search_depth}-qwen-2.5-7b-awq-use-world-model-{use_world_model}")
 for i in tqdm.trange(192):
     done = False
     obs, info = env.reset()
@@ -350,8 +352,12 @@ for i in tqdm.trange(192):
             break
     if episodes > 0:
         print(f'success rate: {success/(episodes)}')
-    print(f'reward: {score}')
-    print(f'env steps: {counter}')
+        print(f'reward: {score}')
+        print(f'env steps: {counter}')
+        run.log({
+            'success_rate': success/(episodes),
+            'env_steps': counter
+        })
     if save_dataset == True:
         actor_data['label'] += [counter < 50,] * (len(actor_data['prompt']) - last_len_actor_data)
         wm_data['label'] += [counter < 50,] * (len(wm_data['prompt']) - last_len_wm_data)

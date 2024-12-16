@@ -12,18 +12,23 @@ import outlines.generate.choice
 import outlines.generate.choice
 import outlines.generate.choice
 import outlines.generate.choice
+import outlines.generate.choice
 import outlines.generate.json
 import outlines.generate.json
 import outlines.models
+import outlines.models.llamacpp
 import outlines.models.openai
 import outlines.models.transformers
+import outlines.models.transformers
+import outlines.models.transformers_vision
+import outlines.models.vllm
 import outlines.samplers
 import tqdm
 from pydantic import BaseModel, Field
 from typing import Optional, Literal, List, Union
 import outlines
 from PIL import Image
-from transformers import Qwen2VLForConditionalGeneration, AutoModel, MllamaForConditionalGeneration, LlavaOnevisionForConditionalGeneration, LlavaForConditionalGeneration
+from transformers import AutoModelForCausalLM#Qwen2VLForConditionalGeneration, AutoModel, MllamaForConditionalGeneration, LlavaOnevisionForConditionalGeneration, LlavaForConditionalGeneration
 import random
 from collections import Counter
 from montecarlo.montecarlo import MonteCarlo
@@ -33,18 +38,31 @@ from threading import Thread, Event
 import pandas as pd
 from uuid import uuid4
 import wandb
+import difflib
 
 single_model = True
-use_world_model = True
+use_world_model = False
+
+#image_obs = '\n\n### Current Observation\n\n<|vision_start|><|image_pad|><|vision_end|>'
+image_obs = '\n\n### Current Observation\n\n<image>'
+
 
 if single_model == True:
     mllm = outlines.models.transformers(
-        "Qwen/Qwen2.5-7B-Instruct-AWQ",
-        #"OpenGVLab/InternVL2-1B",
-        #model_class=Qwen2VLForConditionalGeneration,
+        #"Qwen/Qwen2.5-14B-Instruct-AWQ",
+        "meta-llama/Llama-3.3-70B-Instruct",
+        device='auto',
+        #"Qwen/Qwen2-VL-2B-Instruct",
+        #repo_id="bartowski/Marco-o1-GGUF",
+        #filename="Marco-o1-Q4_K_M.gguf"
+        #trust_remote_code=True,
+        #quantization='bitsandbytes'
+        #model_class=AutoModelForCausalLM,
         #model_class=AutoModel,
-        device="auto",
-        #model_kwargs=dict(load_in_4bit=True, bnb_4bit_use_double_quant=True, torch_dtype='auto')
+        #device="auto",
+        #model_kwargs=dict(trust_remote_code=True),
+        #processor_kwargs=dict(trust_remote_code=True)
+        model_kwargs=dict(load_in_4bit=True, bnb_4bit_use_double_quant=True, torch_dtype='auto')
     )
     mllm_world_model = mllm
     mllm_reward_model = mllm
@@ -75,6 +93,7 @@ actor_data = {
     'completion': [],
     'label': [],
     'image': [],
+    'episode_id': []
 }
 wm_data = {
     'prompt': [],
@@ -101,13 +120,13 @@ last_len_rm_data = len(rm_data['prompt'])
 last_len_stop_data = len(stop_data['prompt'])
 
 # setup environment
-env = getattr(environment, env_type)(config, train_eval='eval_out_of_distribution')
-#env = getattr(environment, env_type)(config, train_eval='train')
+#env = getattr(environment, env_type)(config, train_eval='eval_out_of_distribution')
+env = getattr(environment, env_type)(config, train_eval='train')
 env = env.init_env(batch_size=1)
 success = 0.0
 n_actions_sampled = 1
 search_depth = 1
-save_dataset = False
+save_dataset = True
 with open('action_prompt.md', 'r') as f:
     action_prompt_template = f.read()
 with open('final_action_prompt.md', 'r') as f:
@@ -125,7 +144,7 @@ for k in example.keys():
 task_types = ['put', 'clean', 'heat', 'cool', 'put two', 'examine'][::-1]
 episodes = 0
 run = wandb.init(name=f"AlphaHome-alfred-thor-world-val-unseen-breadth-{n_actions_sampled}-depth-{search_depth}-qwen-2.5-7b-awq-use-world-model-{use_world_model}")
-for i in tqdm.trange(192):
+for i in tqdm.trange(4639):
     done = False
     obs, info = env.reset()
     print(obs[0].split('\n\n'))
@@ -161,6 +180,7 @@ for i in tqdm.trange(192):
     previous_actions = []
     world_state = [{
         'think': None,
+        'plan': None,
         'action': None,
         'observation': obs[0]
     }]
@@ -191,7 +211,8 @@ for i in tqdm.trange(192):
                 best_next_actions: List[Action]'''
             class Action(BaseModel):
                 think: str
-                action_choice: str# = Field()
+                #plan: str
+                action_choice: Literal[tuple(info['admissible_commands'][0])]# = Field()
             
             class Observation(BaseModel):
                 #think: str
@@ -219,20 +240,20 @@ for i in tqdm.trange(192):
                 image.save(image_path)
             def child_finder(node: Node, montecarlo: MonteCarlo, start=False, available_actions=[]):    
                 global actor_data, wm_data, rm_data, stop_data
-                action_prompt = action_prompt_template.format(example=json.dumps(current_example), previous_actions=json.dumps(node.state), task=task)
-                if start == True:
-                    action_prompt += f"\n\n### Available Actions\n\n{available_actions}"
-                actions: List[Action] = action_generator([action_prompt,]*n_actions_sampled)
+                action_prompt = action_prompt_template.format(example=json.dumps(current_example), previous_actions=json.dumps(node.state), task=task, available_actions=available_actions)
+                action_prompt += image_obs
+                actions: List[Action] = action_generator([action_prompt,]*n_actions_sampled)#, [[image,],]*n_actions_sampled)
                 print('.', end='')
                 if use_world_model == True:
                     observation_prompts = []
                     for n in range(min(n_actions_sampled, len(actions))):
                             action = actions[n]
-                            observation_prompts += [world_model_prompt_template.format(example=json.dumps(current_example), previous_actions=json.dumps([{'think': e['think'], 'action': e['action'], 'observation': e['observation']} for e in node.state]), current_action=action.action_choice),]
+                            observation_prompts += [world_model_prompt_template.format(example=json.dumps(current_example), previous_actions=json.dumps([{'think': e['think'], 'action': e['action'], 'observation': e['observation']} for e in node.state]), current_action=action.action_choice) + image_obs,]
                             actor_data['prompt'] += [action_prompt,]
                             actor_data['completion'] += [action.model_dump_json(),]
                             actor_data['image'] += [image_path,]
-                    observations: List[Observation] = observation_generator(observation_prompts)
+                            actor_data['episode_id'] += [i,]
+                    observations: List[Observation] = observation_generator(observation_prompts)#, [[image,],]*n_actions_sampled)
                     child_nodes = []
                     reward_prompts = []
                     for n, observation in enumerate(observations):
@@ -247,7 +268,7 @@ for i in tqdm.trange(192):
                         wm_data['image'] += [image_path,]
                         child = Node(next_world_state)
                         child_nodes.append(child)
-                        reward_prompts += [value_estimation_prompt_template.format(previous_actions=next_world_state),]
+                        reward_prompts += [value_estimation_prompt_template.format(previous_actions=next_world_state) + image_obs,]
                 else:
                     child_nodes = []
                     reward_prompts = []
@@ -258,31 +279,45 @@ for i in tqdm.trange(192):
                                     'action': action.action_choice,
                                     #'observation': observation.observation
                         }]
+                        actor_data['prompt'] += [action_prompt,]
+                        actor_data['completion'] += [action.model_dump_json(),]
+                        actor_data['image'] += [image_path,]
+                        actor_data['episode_id'] += [i,]
                         child = Node(next_world_state)
                         child_nodes.append(child)
-                        reward_prompts += [value_estimation_prompt_template.format(previous_actions=next_world_state),]
-                rewards: List[Reward] = reward_generator(reward_prompts)
-                for n in range(len(rewards)):
-                    rm_data['prompt'] += [reward_prompts[n]]
-                    rm_data['completion'] += [rewards[n].model_dump_json()]
-                    rm_data['image'] += [image_path,]
-                    child: Node = child_nodes[n]
-                    reward: Reward = rewards[n]
-                    child.policy_value = min(1.0, max(0.0, float(reward.score/10.0)))
-                    child.visits = 1
-                    node.add_child(child)
-                success_prompt = success_detection_prompt_template.format(previous_actions=node.state)
-                task_status: TaskStatus = success_detector(success_prompt)
-                stop_data['prompt'] += [success_prompt,]
-                stop_data['completion'] += [task_status.model_dump_json()]
-                stop_data['image'] += [image_path,]
-                #print('--------')
-                #print(task_status)
-                #print('--------')
-                if task_status.task_completed == True:
-                    node.update_win_value(1)
-                #while len(threads) > sum([1 for e in events if e.is_set()]):
-                #    print(sum([1 for e in events if e.is_set()]))
+                        reward_prompts += [value_estimation_prompt_template.format(previous_actions=next_world_state) + image_obs,]
+                if save_dataset != True:
+                    rewards: List[Reward] = reward_generator(reward_prompts)#, [[image,],]*n_actions_sampled)
+                    for n in range(len(rewards)):
+                        rm_data['prompt'] += [reward_prompts[n]]
+                        rm_data['completion'] += [rewards[n].model_dump_json()]
+                        rm_data['image'] += [image_path,]
+                        child: Node = child_nodes[n]
+                        reward: Reward = rewards[n]
+                        child.policy_value = min(1.0, max(0.0, float(reward.score/10.0)))
+                        child.visits = 1
+                        node.add_child(child)
+                else:
+                    for n in range(n_actions_sampled):
+                        child: Node = child_nodes[n]
+                        child.policy_value = 0.0
+                        child.visits = 1
+                        node.add_child(child)
+                if save_dataset != True:
+                    success_prompt = success_detection_prompt_template.format(previous_actions=node.state) + image_obs
+                    task_status: TaskStatus = success_detector(success_prompt)#, [image,])
+                    stop_data['prompt'] += [success_prompt,]
+                    stop_data['completion'] += [task_status.model_dump_json()]
+                    stop_data['image'] += [image_path,]
+                    #print('--------')
+                    #print(task_status)
+                    #print('--------')
+                    if task_status.task_completed == True:
+                        node.update_win_value(1)
+                    #while len(threads) > sum([1 for e in events if e.is_set()]):
+                    #    print(sum([1 for e in events if e.is_set()]))
+                else:
+                    node.update_win_value(0)
 
             print('Observation: ', obs[0])
             print('Admissible Actions: ', info['admissible_commands'][0])
@@ -293,11 +328,13 @@ for i in tqdm.trange(192):
             print()
             choosen_child: Node = montecarlo.make_choice()
             index = -1
-            action: str = choosen_child.state[index]['action']
             thought: str = choosen_child.state[index]['think']
+            action: str = choosen_child.state[index]['action']
+            #final_action_generator = outlines.generate.choice(mllm, info['admissible_commands'][0])
+            #action = final_action_generator(json.dumps(choosen_child.state))#+"<|vision_start|><|image_pad|><|vision_end|>", [image,])
             #action_chooser =  outlines.generate.choice(mllm, info['admissible_commands'][0])
             #action = action_chooser(thought)
-            #plan: str = choosen_child.state[-1]['plan']
+            plan: str = ''#choosen_child.state[-1]['plan']
             #final_action_prompt = final_action_prompt_template.format(allowed_actions = info['admissible_commands'][0], action={'think': thought, 'action_choice': action})
             #final_action: FinalAction = final_action_generator(final_action_prompt)
             #action = final_action.action_choice
@@ -332,8 +369,8 @@ for i in tqdm.trange(192):
                 #'next_step': action.next_step
             #})
             obs, scores, dones, infos = env.step([action])
-            if 'nothing happens' in obs[0].lower():
-                obs = tuple([f'Invalid action: {action}. Choose one of the following actions instead: {", ".join(info["admissible_commands"][0])}'])
+            #if 'nothing happens' in obs[0].lower():
+            #    obs = tuple([f'Invalid action: {action}. Choose one of the following actions instead: {", ".join(info["admissible_commands"][0])}'])
             world_state.append({
                 'think': thought,
                 'action': action,
@@ -348,6 +385,7 @@ for i in tqdm.trange(192):
         episodes += 1
     except BaseException as e:
         print(e)
+        #raise e
         if isinstance(e, KeyboardInterrupt):
             break
     if episodes > 0:
@@ -363,7 +401,7 @@ for i in tqdm.trange(192):
         wm_data['label'] += [counter < 50,] * (len(wm_data['prompt']) - last_len_wm_data)
         rm_data['label'] += [counter < 50,] * (len(rm_data['prompt']) - last_len_rm_data)
         stop_data['label'] += [counter < 50,] * (len(stop_data['prompt']) - last_len_stop_data)
-        pd.DataFrame.from_dict(data=actor_data).to_csv('./actor_dataset/train.csv', sep=';')
+        pd.DataFrame.from_dict(data=actor_data).to_json('./actor_dataset/train.jsonl', lines=True, orient='records')
         pd.DataFrame.from_dict(data=wm_data).to_csv('./world_model_dataset/train.csv', sep=';')
         pd.DataFrame.from_dict(data=rm_data).to_csv('./reward_model_dataset/train.csv', sep=';')
         pd.DataFrame.from_dict(data=stop_data).to_csv('./success_detector_dataset/train.csv', sep=';')

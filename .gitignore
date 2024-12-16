@@ -1,5 +1,13 @@
 *_checkpoints
+*_checkpoints_v*
 *_dataset
+*_dataset_v2
 images
+images_v2
 alfred_world_model
 wandb
+tmp
+unsloth_compiled_cache
+tw_games
+.cache
+.vscode

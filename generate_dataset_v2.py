@@ -30,9 +30,13 @@ from collections import Counter
 from airllm.auto_model import AutoModel
 from openai import OpenAI
 import difflib
+import pandas as pd
+from uuid import uuid4
 
-#engine = 'instructor'
-engine = 'outlines'
+save_dataset = True
+
+engine = 'instructor'
+#engine = 'outlines'
 
 class CustomAutoModel(AutoModel):
     def from_pretrained(pretrained_model_name_or_path, **kwargs):
@@ -43,7 +47,7 @@ class CustomAutoModel(AutoModel):
 
 if engine == 'outlines':
     mllm = outlines.models.transformers_vision(
-        './actor_checkpoints_v4/checkpoint-15',
+        './actor_checkpoints/checkpoint-1067',
         model_class=Qwen2VLForConditionalGeneration,
         #"Qwen/Qwen2.5-7B-Instruct-AWQ",
         #"Qwen/Qwen2-VL-2B-Instruct",
@@ -62,21 +66,21 @@ if engine == 'outlines':
 elif engine == 'instructor':
     #mllm = outlines.models.openai("nvidia/llama-3.1-nemotron-70b-instruct")
     #mllm.client.base_url = "https://integrate.api.nvidia.com/v1"
-    reasoning_mllm = instructor.from_openai(OpenAI(base_url='http://localhost:11434/v1'), mode=instructor.Mode.JSON_O1)
-    mllm = instructor.from_openai(OpenAI(base_url='http://localhost:11434/v1'), mode=instructor.Mode.JSON)
+    #reasoning_mllm = instructor.from_openai(OpenAI(base_url='http://localhost:11434/v1'), mode=instructor.Mode.JSON_O1)
+    mllm = instructor.from_openai(OpenAI(base_url='https://api.cerebras.ai/v1'), mode=instructor.Mode.JSON)
 
 def infer_with_model(prompt: str, model: type[BaseModel], images=[], available_actions=[]):
     if engine == 'outlines':
         generator = outlines.generate.json(mllm, model, outlines.samplers.greedy())
         return generator(prompt, images)
     if engine == 'instructor':
-        content = reasoning_mllm.client.chat.completions.create(model='marco-o1', messages=[{'role': 'user', 'content': prompt+"\n\nCHOOSE YOUR NEXT ACTION:"}]).choices[0].message.content
-        print(content)
-        output = content.split("<Output>")[1].split("</Output>")[0]
-        thought = output
-        action_choice = difflib.get_close_matches(output.split(',')[0], available_actions, cutoff=0.0)[0]
-        return model(thought=thought, output=action_choice)
-        #return reasoning_mllm.chat.completions.create(model='marco-o1', messages=[{'role': 'user', 'content': prompt}], max_retries=20, strict=True, response_model=model)
+        #content = reasoning_mllm.client.chat.completions.create(model='marco-o1', messages=[{'role': 'user', 'content': prompt+"\n\nCHOOSE YOUR NEXT ACTION:"}]).choices[0].message.content
+        #print(content)
+        #output = content.split("<Output>")[1].split("</Output>")[0]
+        #thought = output
+        #action_choice = difflib.get_close_matches(output.split(',')[0], available_actions, cutoff=0.0)[0]
+        #return model(thought=thought, output=action_choice)
+        return mllm.chat.completions.create(model='llama-3.3-70b', messages=[{'role': 'user', 'content': prompt}], max_retries=20, strict=True, response_model=model)
         #reasoning = reasoning_mllm.chat.completions.create(model='marco-o1', messages=[{'role': 'user', 'content': prompt}], response_model=str, strict=False)
         #return mllm.chat.completions.create(model='llama3.2', messages=[{'role': 'user', 'content': f'Parse the following message: \"{content.split("<Output>")[1].split("</Output>")[0]}\" into one of the following actions: {available_actions}'}], response_model=model, max_retries=20)
 
@@ -106,8 +110,26 @@ class WorldState(BaseModel):
     item_in_hand: Optional[Item] = Field()
     current_location: str = Field()
 
+
+class PlanStep(BaseModel):
+    thought: str = Field()
+    action: str = Field()
+    expected_outcome: str = Field()
+    reflection: str = Field()
+    score: int = Field()
+
+class Plan(BaseModel):
+    plan_steps: List[PlanStep] = Field()
+
+actor_data = {
+    'messages': [],
+    'label': []
+}
+
+last_len_actor_data = len(actor_data['messages'])
+
 # setup environment
-env = getattr(environment, env_type)(config, train_eval='eval_out_of_distribution')
+env = getattr(environment, env_type)(config, train_eval='train')
 env: AlfredThorEnv = env.init_env(batch_size=1)
 success = 0.0
 n_actions_sampled = 1
@@ -119,7 +141,7 @@ for k in example.keys():
     example[k] = example[k][:]
 task_types = ['put', 'clean', 'heat', 'cool', 'put two', 'examine'][::-1]
 episodes = 0
-for i in tqdm.trange(192):
+for i in tqdm.trange(4000):
     done = False
     obs, info = env.reset()
     print(obs[0].split('\n\n'))
@@ -152,9 +174,11 @@ for i in tqdm.trange(192):
     #print(obs)
     #print(env.get_frames())
     #exit()
-    previous_actions = [{'thought': None}]
+    previous_actions = []
     score = 0
     counter = 0
+    images = []
+    image_paths = []
     try:
         while not done and counter < 50:
             #info['admissible_commands'][0] = [c for c in info['admissible_commands'][0] if c not in ['inventory']]
@@ -163,17 +187,17 @@ for i in tqdm.trange(192):
                 #desired_world_state: WorldState = Field()
                 #observation_description: str = Field()
                 #reflection: str = Field()
-                thought: str = Field()
+                plan: Plan = Field()
                 #current_step: str = Field()
                 #plan: str = Field()
                 #action: str = Field()
-                action_choice: str = Field()#Literal[tuple(info['admissible_commands'][0])] = Field()
+                action_choice: Literal[tuple(info['admissible_commands'][0])] = Field()
                 #next_step: str = Field()
                 #action_choice: str = Field()
-            images = [Image.fromarray(f[:,:,::-1]) for f in env.get_frames()]
+            images += [Image.fromarray(f[:,:,::-1]) for f in env.get_frames()]
             vision = f"{''.join(['<|vision_start|><|image_pad|><|vision_end|>',]*len(images))}"
             prompt = prompt_template.format(task=task, previous_actions=json.dumps(previous_actions), text_obs=obs[0]+"\nReceptacles in the room: "+receptacles+"\nTASK DONE: FALSE", available_actions=json.dumps(info['admissible_commands'][0]), example=json.dumps(current_example), vision=vision)
-            prompt += '\n\n### Current Observation\n\n<|vision_start|><|image_pad|><|vision_end|>'
+            #prompt += '\n\n### Current Observation\n\n<|vision_start|><|image_pad|><|vision_end|>'
             #print(prompt)
             #exit()
             actions: List[Action] = []
@@ -184,12 +208,63 @@ for i in tqdm.trange(192):
             most_common_choice = choice_counter.most_common(1)[0][0]
             action = [a for a in actions if a.action_choice == most_common_choice][0]
             print(obs[0])
-            print(action.thought)
-            print(action.action_choice)
+            print(action)
+            messages = []
+            for obs_index in range(len(previous_actions)):
+                messages.append({
+                    'role': 'user',
+                    'content': [
+                        {
+                            'type': 'image',
+                            'image': image_paths[obs_index]
+                        },
+                        {
+                            'type': 'text',
+                            'text': f'Available actions: {json.dumps(previous_actions[obs_index]["available_actions"])}'
+                        }
+                    ]
+                })
+                messages.append({
+                    'role': 'assistant',
+                    'content': [
+                        {'type': 'text', 'text': f'<action>{previous_actions[obs_index]["action_choice"]}</action>'}
+                    ]
+                })
+            obs_img: Image.Image = images[-1]
+            obs_id = str(uuid4())
+            obs_path = f'./images_v2/{obs_id}.jpg'
+            obs_img.save(obs_path)
+            image_paths.append(obs_path)
+            messages.append({
+                'role': 'user',
+                'content': [
+                    {
+                        'type': 'image',
+                        'image': obs_path
+                    },
+                    {
+                        'type': 'text',
+                        'text': f'Available actions: {json.dumps(info["admissible_commands"][0])}'
+                    }
+                ]
+            })
+            response_str = '<plan>'
+            for plan_step in action.plan.plan_steps:
+                response_str += f'<plan_step><thought>{plan_step.thought}</thought><action>{plan_step.action}</action><expected_outcome>{plan_step.expected_outcome}</expected_outcome><reflection>{plan_step.reflection}</reflection><score>{plan_step.score}</score></plan_step>'
+            response_str += '</plan>'
+            response_str += f'<action>{action.action_choice}</action>'
+            messages.append({
+                'role': 'assistant',
+                'content': [
+                    {'type': 'text', 'text': response_str}
+                ]
+            })
+            actor_data['messages'].append(messages)
             previous_actions.append({
                 'observation': obs[0],
+                'available_actions': info['admissible_commands'][0],
                 #'reflection': action.reflection,
-                'thought': action.thought,
+                #'thought': action.thought,
                 #'current_step': action.current_step,
                 #'plan': action.plan,
                 #'thought': action.thought,
@@ -212,3 +287,7 @@ for i in tqdm.trange(192):
         print(f'success rate: {success/episodes}')
         print(f'reward: {score}')
         print(f'env steps: {counter}')
+    if save_dataset == True:
+        actor_data['label'] += [counter < 50,] * (len(actor_data['messages']) - last_len_actor_data)
+        pd.DataFrame.from_dict(data=actor_data).to_json('./actor_dataset_v2/train.jsonl', lines=True, orient='records')
+        last_len_actor_data = len(actor_data['messages'])

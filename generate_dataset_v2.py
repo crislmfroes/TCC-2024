@@ -57,7 +57,7 @@ if engine == 'outlines':
         #quantization='bitsandbytes'
         #model_class=AutoModelForCausalLM,
         #model_class=AutoModel,
-        device="auto",
+        #device="auto",
         #model_kwargs=dict(trust_remote_code=True),
         #processor_kwargs=dict(trust_remote_code=True)
         model_kwargs=dict(load_in_4bit=True, bnb_4bit_use_double_quant=True, torch_dtype='auto')

@@ -35,8 +35,8 @@ from uuid import uuid4
 
 save_dataset = True
 
-engine = 'instructor'
-#engine = 'outlines'
+#engine = 'instructor'
+engine = 'outlines'
 
 class CustomAutoModel(AutoModel):
     def from_pretrained(pretrained_model_name_or_path, **kwargs):
@@ -46,9 +46,9 @@ class CustomAutoModel(AutoModel):
         return model
 
 if engine == 'outlines':
-    mllm = outlines.models.transformers_vision(
-        './actor_checkpoints/checkpoint-1067',
-        model_class=Qwen2VLForConditionalGeneration,
+    mllm = outlines.models.transformers(
+        'meta-llama/Llama-3.3-70B-Instruct',
+        #model_class=Qwen2VLForConditionalGeneration,
         #"Qwen/Qwen2.5-7B-Instruct-AWQ",
         #"Qwen/Qwen2-VL-2B-Instruct",
         #repo_id="bartowski/Marco-o1-GGUF",
@@ -60,19 +60,19 @@ if engine == 'outlines':
         device="auto",
         #model_kwargs=dict(trust_remote_code=True),
         #processor_kwargs=dict(trust_remote_code=True)
-        #model_kwargs=dict(load_in_4bit=True, bnb_4bit_use_double_quant=True, torch_dtype='auto')
+        model_kwargs=dict(load_in_4bit=True, bnb_4bit_use_double_quant=True, torch_dtype='auto')
     )
 
 elif engine == 'instructor':
     #mllm = outlines.models.openai("nvidia/llama-3.1-nemotron-70b-instruct")
     #mllm.client.base_url = "https://integrate.api.nvidia.com/v1"
     #reasoning_mllm = instructor.from_openai(OpenAI(base_url='http://localhost:11434/v1'), mode=instructor.Mode.JSON_O1)
-    mllm = instructor.from_openai(OpenAI(base_url='https://api.cerebras.ai/v1'), mode=instructor.Mode.JSON)
+    mllm = instructor.from_openai(OpenAI(base_url='https://api.groq.com/openai/v1'), mode=instructor.Mode.JSON)
 
 def infer_with_model(prompt: str, model: type[BaseModel], images=[], available_actions=[]):
     if engine == 'outlines':
         generator = outlines.generate.json(mllm, model, outlines.samplers.greedy())
-        return generator(prompt, images)
+        return generator(prompt)
     if engine == 'instructor':
         #content = reasoning_mllm.client.chat.completions.create(model='marco-o1', messages=[{'role': 'user', 'content': prompt+"\n\nCHOOSE YOUR NEXT ACTION:"}]).choices[0].message.content
         #print(content)
@@ -80,7 +80,7 @@ def infer_with_model(prompt: str, model: type[BaseModel], images=[], available_a
         #thought = output
         #action_choice = difflib.get_close_matches(output.split(',')[0], available_actions, cutoff=0.0)[0]
         #return model(thought=thought, output=action_choice)
-        return mllm.chat.completions.create(model='llama-3.3-70b', messages=[{'role': 'user', 'content': prompt}], max_retries=20, strict=True, response_model=model)
+        return mllm.chat.completions.create(model='llama-3.3-70b-versatile', messages=[{'role': 'user', 'content': prompt}], max_retries=20, strict=True, response_model=model)
         #reasoning = reasoning_mllm.chat.completions.create(model='marco-o1', messages=[{'role': 'user', 'content': prompt}], response_model=str, strict=False)
         #return mllm.chat.completions.create(model='llama3.2', messages=[{'role': 'user', 'content': f'Parse the following message: \"{content.split("<Output>")[1].split("</Output>")[0]}\" into one of the following actions: {available_actions}'}], response_model=model, max_retries=20)
 
@@ -187,11 +187,12 @@ for i in tqdm.trange(4000):
                 #desired_world_state: WorldState = Field()
                 #observation_description: str = Field()
                 #reflection: str = Field()
-                plan: Plan = Field()
+                #plan: Plan = Field()
+                thought: str = Field()
                 #current_step: str = Field()
                 #plan: str = Field()
                 #action: str = Field()
-                action_choice: Literal[tuple(info['admissible_commands'][0])] = Field()
+                action_choice: str = Field()
                 #next_step: str = Field()
                 #action_choice: str = Field()
             images += [Image.fromarray(f[:,:,::-1]) for f in env.get_frames()]
@@ -220,14 +221,14 @@ for i in tqdm.trange(4000):
                         },
                         {
                             'type': 'text',
-                            'text': f'Available actions: {json.dumps(previous_actions[obs_index]["available_actions"])}'
+                            'text': f'Observation: {previous_actions[obs_index]["observation"]}\nAvailable actions: {json.dumps(previous_actions[obs_index]["available_actions"])}'
                         }
                     ]
                 })
                 messages.append({
                     'role': 'assistant',
                     'content': [
-                        {'type': 'text', 'text': f'<action>{previous_actions[obs_index]["action_choice"]}</action>'}
+                        {'type': 'text', 'text': f'{Action(thought=previous_actions[obs_index]["thought"], action_choice=previous_actions[obs_index]["action_choice"]).model_dump_json()}'}
                     ]
                 })
             obs_img: Image.Image = images[-1]
@@ -244,15 +245,16 @@ for i in tqdm.trange(4000):
                     },
                     {
                         'type': 'text',
-                        'text': f'Available actions: {json.dumps(info["admissible_commands"][0])}'
+                        'text': f'Observation: {obs[0]}\nAvailable actions: {json.dumps(info["admissible_commands"][0])}'
                     }
                 ]
             })
-            response_str = '<plan>'
+            '''response_str = '<plan>'
             for plan_step in action.plan.plan_steps:
                 response_str += f'<plan_step><thought>{plan_step.thought}</thought><action>{plan_step.action}</action><expected_outcome>{plan_step.expected_outcome}</expected_outcome><reflection>{plan_step.reflection}</reflection><score>{plan_step.score}</score></plan_step>'
             response_str += '</plan>'
-            response_str += f'<action>{action.action_choice}</action>'
+            response_str += f'<action>{action.action_choice}</action>'''
+            response_str = action.model_dump_json()
             messages.append({
                 'role': 'assistant',
                 'content': [
@@ -267,7 +269,7 @@ for i in tqdm.trange(4000):
                 #'thought': action.thought,
                 #'current_step': action.current_step,
                 #'plan': action.plan,
-                #'thought': action.thought,
+                'thought': action.thought,
                 #'action': action.action,
                 'action_choice': action.action_choice,
                 #'next_step': action.next_step
@@ -281,6 +283,7 @@ for i in tqdm.trange(4000):
         episodes += 1
     except BaseException as e:
         print(e)
+        break
         if isinstance(e, KeyboardInterrupt):
             break
     if episodes > 0:

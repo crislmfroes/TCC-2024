@@ -38,6 +38,13 @@ save_dataset = True
 #engine = 'instructor'
 engine = 'outlines'
 
+config = generic.load_config()
+env_type = config['env']['type'] # 'AlfredTWEnv' or 'AlfredThorEnv' or 'AlfredHybrid'
+
+# setup environment
+env = getattr(environment.alfred_thor_env, env_type)(config, train_eval='train')
+env = env.init_env(batch_size=1)
+
 class CustomAutoModel(AutoModel):
     def from_pretrained(pretrained_model_name_or_path, **kwargs):
         model = AutoModel.from_pretrained(pretrained_model_name_or_path=pretrained_model_name_or_path)
@@ -85,9 +92,6 @@ def infer_with_model(prompt: str, model: type[BaseModel], images=[], available_a
         #return mllm.chat.completions.create(model='llama3.2', messages=[{'role': 'user', 'content': f'Parse the following message: \"{content.split("<Output>")[1].split("</Output>")[0]}\" into one of the following actions: {available_actions}'}], response_model=model, max_retries=20)
 
 
-config = generic.load_config()
-env_type = config['env']['type'] # 'AlfredTWEnv' or 'AlfredThorEnv' or 'AlfredHybrid'
-
 class Item(BaseModel):
     name: str = Field()
     cleaning_state: Literal['clean', 'dirty']
@@ -128,9 +132,7 @@ actor_data = {
 
 last_len_actor_data = len(actor_data['messages'])
 
-# setup environment
-env = getattr(environment, env_type)(config, train_eval='train')
-env = env.init_env(batch_size=1)
+
 success = 0.0
 n_actions_sampled = 1
 with open('action_prompt.md', 'r') as f:

@@ -3,7 +3,7 @@ import sys
 import numpy as np
 import alfworld.agents.environment as environment
 import alfworld.agents.modules.generic as generic
-#from alfworld.agents.environment.alfred_thor_env import AlfredThorEnv
+from alfworld.agents.environment.alfred_thor_env import AlfredThorEnv
 import json
 import time
 from collections import deque
@@ -42,7 +42,7 @@ config = generic.load_config()
 env_type = config['env']['type'] # 'AlfredTWEnv' or 'AlfredThorEnv' or 'AlfredHybrid'
 
 # setup environment
-env = getattr(environment.alfred_thor_env, env_type)(config, train_eval='train')
+env = AlfredThorEnv(config, train_eval='train')
 env = env.init_env(batch_size=1)
 
 class CustomAutoModel(AutoModel):

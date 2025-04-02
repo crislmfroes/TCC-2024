@@ -11,3 +11,10 @@ unsloth_compiled_cache
 tw_games
 .cache
 .vscode
+*.csv
+*.jsonl
+*.jpg
+*.arrow
+datasets
+cot_vlm_v1
+outputs

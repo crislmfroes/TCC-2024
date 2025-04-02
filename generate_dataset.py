@@ -22,10 +22,9 @@ from PIL import Image
 from transformers import Qwen2VLForConditionalGeneration, AutoModel, MllamaForConditionalGeneration, LlavaOnevisionForConditionalGeneration, LlavaForConditionalGeneration
 import random
 from collections import Counter
-from montecarlo.montecarlo import MonteCarlo
-from montecarlo.node import Node
 from copy import deepcopy, copy
 import pandas as pd
+from uuid import uuid4
 
 with open('world_model_prompt.md', 'r') as f:
     world_model_prompt_template = f.read()
@@ -53,29 +52,47 @@ env_type = config['env']['type'] # 'AlfredTWEnv' or 'AlfredThorEnv' or 'AlfredHy
 env = getattr(environment, env_type)(config, train_eval='train')
 env = env.init_env(batch_size=1)
 rows = []
-for i in tqdm.trange(1000):
+success = 0
+for i in tqdm.trange(2000):
     done = False
     obs, info = env.reset()
+    task = obs[0].split('\n\n')[-1]
+    image = Image.fromarray(env.get_frames()[0][:,:,::-1])
+    image_path = f'./images/{str(uuid4())}.jpg'
+    image.save(image_path)
+    action = info['extra.expert_plan'][0][0]
     trajectory = [{
-        'action': None,
-        'observation': obs[0],
+        'observation': image_path,
+        'available_actions': info['admissible_commands'][0],
+        'action': action
     }]
-    action = random.choice(info['admissible_commands'][0])
+    step_counter = 0
     while not done:
         obs, scores, dones, infos = env.step([action])
+        step_counter += 1
         done = dones[0]
         info = infos
-        trajectory.append({
-            'action': action,
-            'observation': obs[0],
-        })
-        action = random.choice(info['admissible_commands'][0])
-    rows += convert_traj_to_alpaca(trajectory=trajectory)
+        action = info['extra.expert_plan'][0][0]
+        image = Image.fromarray(env.get_frames()[0][:,:,::-1])
+        image_path = f'./images/{str(uuid4())}.jpg'
+        image.save(image_path)
+        trajectory += [{
+            'observation': image_path,
+            'available_actions': info['admissible_commands'][0],
+            'action': action
+        }]
+    row = {
+        'trajectory': trajectory,
+        'task_goal': task
+    }
+    if step_counter < 50:
+        success += 1
+        row['success'] = True
+    else:
+        row['success'] = False
+    rows.append(row)
 
-data = {
-    'instruction': [r['instruction'] for r in rows],
-    'output': [r['output'] for r in rows],
-}
+    print('success rate: ', success/(i+1))
 
-ds = pd.DataFrame.from_dict(data=data)
-ds.to_csv('./train.csv', sep=';')
+    ds = pd.DataFrame.from_dict(data=rows)
+    ds.to_json('./train.jsonl', lines=True, orient='records')

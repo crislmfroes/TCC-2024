@@ -9,13 +9,13 @@ import difflib
 import uuid
 from copy import copy
 from typing import List
-from unified_planning.io import PDDLReader
-from unified_planning.shortcuts import OneshotPlanner
 from autogen.coding import CodeBlock, CodeExecutor, CodeExtractor, CodeResult, MarkdownCodeExtractor
 from pydantic import BaseModel
-from montecarlo.montecarlo import MonteCarlo
-from montecarlo.node import Node
 from typing import Optional, Literal
+import random
+import json
+
+random.seed(123)
 
 class Object(BaseModel):
     name: str
@@ -96,7 +96,9 @@ planning_config = {
     'config_list': [
         {
             'model': 'marco-o1',
-            'api_type': 'ollama'
+            'api_type': 'openai',
+            'base_url': 'http://0.0.0.0:11434/v1',
+            'temperature': 0
         }
     ]
 }
@@ -135,15 +137,13 @@ vlm_config = {
 llm_config = {
     'config_list': [
         {
-            'model': 'llama3.1',
+            'model': 'qwen2.5',
             'api_type': 'ollama',
-            #'temperature': 0
+            #'base_url': 'http://0.0.0.0:11434/v1',
+            'temperature': 0
         }
     ]
 }
-
-with open('alfred.pddl', 'r') as f:
-    domain_file_content = f.read()
 
 class PDDLExecutor(CodeExecutor):
 
@@ -170,15 +170,15 @@ camera_reader = AssistantAgent(name='camera reader', llm_config=False)
 
 perception_system = MultimodalConversableAgent('perception system', system_message="You are the perception system of a general purpose service robot. You always answer by parsing the contents of the observation into a structured format", llm_config=perception_config)
 
-planning_system = AssistantAgent(name='planning system', system_message=f'You are the task planning system of a general purpose service robot\nUse the fridge for cooling objects\nUse the microwave for heating objects\nUse the sink for cleaning objects', llm_config=llm_config)
+planning_system = AssistantAgent(name='planning system', system_message=f'You are the task planning system of a general purpose service robot\nUse the fridge for cooling objects\nUse the microwave for heating objects\nUse the sink for cleaning objects', llm_config=planning_config)
 
-planner_user = UserProxyAgent(name='planner user', human_input_mode='NEVER')
+planner_user = UserProxyAgent(name='planner user', human_input_mode='NEVER', code_execution_config=False)
 
 navigation_system = AssistantAgent(name='navigation system', system_message='You are the navigation system of a general purpose service robot.', llm_config=llm_config)
 
 manipulation_system = AssistantAgent(name='manipulation system', system_message='You are the manipulation system of a general purpose service robot.', llm_config=llm_config)
 
-robot = AssistantAgent(name='robot', system_message=f'You are a general purpose service robot', llm_config=llm_config)
+robot = AssistantAgent(name='robot', system_message=f"You are a general purpose service robot.\nWhen given a new task, reason through it step-by-step, and then execute your next action with a tool call.\n\nExample:\n\nUser: ...(some task)\nYou (calling 'execute_action' function): {json.dumps({'explanation': 'My task is to ..., therefore my plan is to ..., reasoning about the available actions, the most promising one it $action, I will now execute the action $action and then ...', 'next_action': '$action'})}\nUser: ...(environment feedback)\nYou (calling 'execute_action' function): {{...}}\n...", llm_config=llm_config)
 
 critic = AssistantAgent(name='critic', system_message=f'You are an expert robot critic. Your expertise lies in the ability to provide constructive feedback to a service robot executing tasks inbside a house', llm_config=vlm_config)
 
@@ -189,7 +189,7 @@ def check_terminate(msg):
     print('Done: ', done)
     return done == True
 
-user_proxy = UserProxyAgent('user proxy', human_input_mode='NEVER', is_termination_msg=check_terminate, code_execution_config={'executor': PDDLExecutor()})
+user_proxy = UserProxyAgent('user proxy', human_input_mode='NEVER', is_termination_msg=check_terminate, code_execution_config=False, llm_config=False)
 
 '''#@user_proxy.register_for_execution()
 #@robot.register_for_llm(description='write your step-by-step plan here before doing anything else')
@@ -345,17 +345,22 @@ def cool(object: str, fridge: str):
 def plan(query: str):
     return planner_user.initiate_chat(recipient=planning_system, message=query, max_turns=1).summary
 
-##@user_proxy.register_for_execution()
-##@robot.register_for_llm(description='execute some action')
-def execute_action(thought: str, action: str):
+#@user_proxy.register_for_execution()
+#@robot.register_for_llm(description='Think step-by-step before executing any action')
+def think(thought: str):
+    return thought
+
+@user_proxy.register_for_execution()
+@robot.register_for_llm(description='Execute some action in the environment')
+def execute_action(explanation: str, next_action: str):
     global env
     global info
     global done
     global counter
-    obs, score, done, info = env.step(difflib.get_close_matches(action, info['admissible_commands'][0])[0])
+    obs, score, done, info = env.step([next_action])
     counter += 1
     done = done[0]
-    return f"Observation: {obs[0]}\n\nAdmissible Actions: {info['admissible_commands'][0]}"
+    return f"Observation: {obs[0]}\n\nAdmissible Actions: {info['admissible_commands'][0]}\n\nTask Completed: {done}"
 
 #@planner_user.register_for_execution()
 #@planning_system.register_for_llm(description='execute a plan step-by-step. Each step is a string')
@@ -365,8 +370,8 @@ def execute_plan_steps(steps: List[str]):
         outcomes += [user_proxy.initiate_chat(recipient=robot, message=step, max_turns=1).summary]
     return outcomes
 
-@user_proxy.register_for_execution()
-@robot.register_for_llm(description='put a specified amount of objects, with the given state, on the given piece of furniture')
+#@user_proxy.register_for_execution()
+#@robot.register_for_llm(description='put a specified amount of objects, with the given state, on the given piece of furniture')
 def put_object_on_furniture(object: str, furniture: str, object_count: int=1, object_must_be_hot: bool=False, object_must_be_cold: bool=False, object_must_be_clean: bool=False):
     global env
     global info
@@ -437,11 +442,8 @@ def put_object_on_furniture(object: str, furniture: str, object_count: int=1, ob
                                                 result += [obs[0]]
     return result
 
-groupchat = GroupChat(agents=[user_proxy, camera_reader, critic, planning_system, robot], select_speaker_auto_llm_config=orchestrator_config, messages=[], max_round=5, allowed_or_disallowed_speaker_transitions={
-    user_proxy: [camera_reader],
-    camera_reader: [critic],
-    critic: [planning_system],
-    planning_system: [robot],
+groupchat = GroupChat(agents=[user_proxy, robot], select_speaker_auto_llm_config=orchestrator_config, messages=[], max_round=5, allowed_or_disallowed_speaker_transitions={
+    user_proxy: [robot],
     robot: [user_proxy]
 }, speaker_transitions_type='allowed')
 #groupchat = GroupChat(agents=[user_proxy, action_execution_system], select_speaker_auto_llm_config=orchestrator_config, messages=[], speaker_selection_method='round_robin', max_round=200)
@@ -461,12 +463,12 @@ env = getattr(environment, env_type)(config, train_eval='eval_out_of_distributio
 env = env.init_env(batch_size=1)
 success = 0
 total = 0
-for i in tqdm.trange(192):
+for i in tqdm.trange(10):
     done = False
     counter = 0
     obs, info = env.reset()
-    user_proxy.initiate_chat(recipient=robot, message=obs[0], max_turns=5)
-    if done == True and counter < 1000:
+    user_proxy.initiate_chat(recipient=groupchat_manager, message=obs[0]+f'\n\nAdmissible actions: {info["admissible_commands"][0]}', max_turns=50)
+    if done == True and counter < 50:
         success += 1
     total += 1
     print('success: ', success)

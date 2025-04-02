@@ -39,18 +39,31 @@ import pandas as pd
 from uuid import uuid4
 import wandb
 import difflib
+import openai
+import ollama
+import random
+import math
+
+random_seed = 789
+
+random.seed(random_seed)
+
+episode_len = 50//1
 
 single_model = True
 use_world_model = False
+use_comparator = False
+use_critic = True
 
 #image_obs = '\n\n### Current Observation\n\n<|vision_start|><|image_pad|><|vision_end|>'
 image_obs = '\n\n### Current Observation\n\n<image>'
 
+engine = 'instructor'
 
 if single_model == True:
-    mllm = outlines.models.transformers(
+    '''mllm = outlines.models.transformers(
         #"Qwen/Qwen2.5-14B-Instruct-AWQ",
-        "meta-llama/Llama-3.3-70B-Instruct",
+        "meta-llama/Llama-3.1-8B-Instruct",
         device='auto',
         #"Qwen/Qwen2-VL-2B-Instruct",
         #repo_id="bartowski/Marco-o1-GGUF",
@@ -62,13 +75,16 @@ if single_model == True:
         #device="auto",
         #model_kwargs=dict(trust_remote_code=True),
         #processor_kwargs=dict(trust_remote_code=True)
-        model_kwargs=dict(load_in_4bit=True, bnb_4bit_use_double_quant=True, torch_dtype='auto')
-    )
+        #model_kwargs=dict(load_in_4bit=True, bnb_4bit_use_double_quant=True, torch_dtype='auto')
+    )'''
+    mllm = ollama.Client()
+    ollama_model = 'qwen2.5:14b'
     mllm_world_model = mllm
     mllm_reward_model = mllm
     mllm_actor = mllm
     mllm_success_detector = mllm
 else:
+    raise ValueError()
     mllm_actor = outlines.models.transformers(
         "/home/fbot/AlphaHome/actor_checkpoints/checkpoint-603",
         device="auto",
@@ -120,13 +136,14 @@ last_len_rm_data = len(rm_data['prompt'])
 last_len_stop_data = len(stop_data['prompt'])
 
 # setup environment
-#env = getattr(environment, env_type)(config, train_eval='eval_out_of_distribution')
-env = getattr(environment, env_type)(config, train_eval='train')
+env = getattr(environment, env_type)(config, train_eval='eval_out_of_distribution')
+#env = getattr(environment, env_type)(config, train_eval='train')
 env = env.init_env(batch_size=1)
 success = 0.0
-n_actions_sampled = 1
+n_actions_sampled = 5
 search_depth = 1
-save_dataset = True
+use_critic_feedback = False
+save_dataset = False
 with open('action_prompt.md', 'r') as f:
     action_prompt_template = f.read()
 with open('final_action_prompt.md', 'r') as f:
@@ -135,6 +152,8 @@ with open('world_model_prompt.md', 'r') as f:
     world_model_prompt_template = f.read()
 with open('value_estimation_prompt.md', 'r') as f:
     value_estimation_prompt_template = f.read()
+with open('comparator_prompt.md', 'r') as f:
+    comparator_prompt_template = f.read()
 with open('success_detection_prompt.md', 'r') as f:
     success_detection_prompt_template = f.read()
 with open('example.json', 'r') as f:
@@ -143,8 +162,8 @@ for k in example.keys():
     example[k] = []#example[k][:10]
 task_types = ['put', 'clean', 'heat', 'cool', 'put two', 'examine'][::-1]
 episodes = 0
-run = wandb.init(name=f"AlphaHome-alfred-thor-world-val-unseen-breadth-{n_actions_sampled}-depth-{search_depth}-qwen-2.5-7b-awq-use-world-model-{use_world_model}")
-for i in tqdm.trange(4639):
+run = wandb.init(name=f"AlphaHome-alfred-thor-world-val-unseen-breadth-{n_actions_sampled}-depth-{search_depth}-{ollama_model}-use-world-model-{use_world_model}-use-comparator-{use_comparator}-use-critic-feedback-{use_critic_feedback}-seed-{random_seed}")
+for i in tqdm.trange(10):
     done = False
     obs, info = env.reset()
     print(obs[0].split('\n\n'))
@@ -179,18 +198,24 @@ for i in tqdm.trange(4639):
     #exit()
     previous_actions = []
     world_state = [{
-        'think': None,
-        'plan': None,
-        'action': None,
+        #'think': None,
+        #'plan': None,
+        #'action': None,
         'observation': obs[0]
     }]
-    images = []#[Image.fromarray(frame) for frame in env.get_frames()]
+    images = [Image.fromarray(frame[:,:,::-1]) for frame in env.get_frames()]
     score = 0
     counter = 0
     try:
-        while not done and counter < 50:
-            #info['admissible_commands'][0] = [c for c in info['admissible_commands'][0] if c not in ['inventory']]
+        while not done and counter < episode_len:
+            image_paths = []
+            images = []
+            info['admissible_commands'][0] = [c.replace(' sof', ' sofa ').replace(' spatul', ' spatula') for c in info['admissible_commands'][0]]
             print('N frames: ', len(images))
+            for k, img in enumerate(images):
+                img_path = f'/tmp/obs_{k}.jpg'
+                img.save(img_path)
+                image_paths.append(img_path)
             '''class Action(BaseModel):
                 #current_world_state: WorldState = Field()
                 #desired_world_state: WorldState = Field()
@@ -209,51 +234,77 @@ for i in tqdm.trange(4639):
             class Actions(BaseModel):
                 think: str = Field()
                 best_next_actions: List[Action]'''
-            class Action(BaseModel):
+            class FirstAction(BaseModel):
                 think: str
                 #plan: str
                 action_choice: Literal[tuple(info['admissible_commands'][0])]# = Field()
+
+            class Action(BaseModel):
+                think: str
+                action_choice: str
             
             class Observation(BaseModel):
-                #think: str
+                think: str
                 observation: str# = Field()
+                inventory: str
+                available_actions: List[str]
 
             class Reward(BaseModel):
-                #think: str# = Field()
+                think: str# = Field()
                 score: int# = Field()
 
             class TaskStatus(BaseModel):
                 #think: str
                 task_completed: bool = Field()
 
+            class Comparison(BaseModel):
+                think: str
+                winner: Literal['A', 'B', 'Tie']
+
             montecarlo = MonteCarlo(Node(state=world_state))
             montecarlo.root_node.visits = 1
-            action_generator = outlines.generate.json(mllm_actor, Action)
+            #action_generator = outlines.generate.json(mllm_actor, Action)
             #final_action_generator = outlines.generate.json(mllm, FinalAction)#, outlines.samplers.greedy())
-            observation_generator = outlines.generate.json(mllm_world_model, Observation)#, outlines.samplers.greedy())
-            reward_generator = outlines.generate.json(mllm_reward_model, Reward)#, outlines.samplers.greedy())
-            success_detector = outlines.generate.json(mllm_success_detector, TaskStatus)#, outlines.samplers.greedy())
+            #observation_generator = outlines.generate.json(mllm_world_model, Observation)#, outlines.samplers.greedy())
+            #reward_generator = outlines.generate.json(mllm_reward_model, Reward)#, outlines.samplers.greedy())
+            #success_detector = outlines.generate.json(mllm_success_detector, TaskStatus)#, outlines.samplers.greedy())
             image = Image.fromarray(env.get_frames()[0][:,:,::-1])
             image_uuid = str(uuid4())
             image_path = f'./images/{image_uuid}.jpg'
+            image.save('/tmp/obs.jpg')
+            #obs[0] += '\n\nCamera View Description: ' + mllm.chat(model='llama3.2-vision', messages=[{'role': 'user', 'content': 'describe the image', 'images': ['/tmp/obs.jpg']}]).message.content
             if save_dataset == True:
                 image.save(image_path)
             def child_finder(node: Node, montecarlo: MonteCarlo, start=False, available_actions=[]):    
                 global actor_data, wm_data, rm_data, stop_data
-                action_prompt = action_prompt_template.format(example=json.dumps(current_example), previous_actions=json.dumps(node.state), task=task, available_actions=available_actions)
-                action_prompt += image_obs
-                actions: List[Action] = action_generator([action_prompt,]*n_actions_sampled)#, [[image,],]*n_actions_sampled)
+                if start == True:
+                    action_model = FirstAction
+                else:
+                    action_model = Action
+                if n_actions_sampled == 1:
+                    action_temperature = 0
+                else:
+                    action_temperature = 0.7
+                action_prompt = action_prompt_template.format(example=json.dumps(current_example), previous_actions=json.dumps([e for e in node.state]), task=task, available_actions=available_actions, expected_response_format=action_model.model_json_schema())
+                actions: List[Action] = [Action.model_validate_json(mllm.chat(messages=[{'role': 'user', 'content': 'Parse the following message:\n\n"""' + mllm.chat(model=ollama_model, messages=[{'role': 'user', 'content': action_prompt, 'images': image_paths}]).message.content + f'""" into the following JSON schema: {action_model.model_json_schema()}', 'images': image_paths}], model=ollama_model, format=action_model.model_json_schema()).message.content) for n_action in range(n_actions_sampled)]
                 print('.', end='')
+                print(actions)
                 if use_world_model == True:
+                    action_choices = []
                     observation_prompts = []
                     for n in range(min(n_actions_sampled, len(actions))):
                             action = actions[n]
-                            observation_prompts += [world_model_prompt_template.format(example=json.dumps(current_example), previous_actions=json.dumps([{'think': e['think'], 'action': e['action'], 'observation': e['observation']} for e in node.state]), current_action=action.action_choice) + image_obs,]
+                            if action.action_choice in action_choices:
+                                continue
+                            else:
+                                action_choices.append(action.action_choice)
+                            observation_prompts += [world_model_prompt_template.format(example=json.dumps(current_example), previous_actions=json.dumps([{k: e[k] for k in e if k != 'think'} for e in node.state]), current_action=action.action_choice),]
                             actor_data['prompt'] += [action_prompt,]
                             actor_data['completion'] += [action.model_dump_json(),]
                             actor_data['image'] += [image_path,]
                             actor_data['episode_id'] += [i,]
-                    observations: List[Observation] = observation_generator(observation_prompts)#, [[image,],]*n_actions_sampled)
+                    observations: List[Observation] = [Observation.model_validate_json(mllm.chat(messages=[{'role': 'user', 'content': observation_prompt, 'images': image_paths}], model=ollama_model, format=Observation.model_json_schema(), options=dict(temperature=0)).message.content) for observation_prompt in observation_prompts]
+                    print(observations)
                     child_nodes = []
                     reward_prompts = []
                     for n, observation in enumerate(observations):
@@ -261,23 +312,30 @@ for i in tqdm.trange(4639):
                                     'think': action.think,
                                     #'plan': action.plan,
                                     'action': action.action_choice,
-                                    'observation': observation.observation
+                                    'observation': observation.observation,
+                                    'inventory': observation.inventory,
+                                    'available_actions': observation.available_actions
                         }]
                         wm_data['prompt'] += [observation_prompts[n]]
                         wm_data['completion'] += [observation.model_dump_json()]
                         wm_data['image'] += [image_path,]
                         child = Node(next_world_state)
                         child_nodes.append(child)
-                        reward_prompts += [value_estimation_prompt_template.format(previous_actions=next_world_state) + image_obs,]
+                        reward_prompts += [value_estimation_prompt_template.format(previous_actions=json.dumps([{k: e[k] for k in e if k != 'think'} for e in next_world_state])),]
                 else:
                     child_nodes = []
                     reward_prompts = []
+                    action_choices = []
                     for n, action in enumerate(actions):
+                        if action.action_choice in action_choices:
+                            continue
+                        else:
+                            action_choices.append(action.action_choice)
                         next_world_state = node.state + [{
                                     'think': action.think,
                                     #'plan': action.plan,
                                     'action': action.action_choice,
-                                    #'observation': observation.observation
+                                    'observation': ''
                         }]
                         actor_data['prompt'] += [action_prompt,]
                         actor_data['completion'] += [action.model_dump_json(),]
@@ -285,18 +343,63 @@ for i in tqdm.trange(4639):
                         actor_data['episode_id'] += [i,]
                         child = Node(next_world_state)
                         child_nodes.append(child)
-                        reward_prompts += [value_estimation_prompt_template.format(previous_actions=next_world_state) + image_obs,]
-                if save_dataset != True:
-                    rewards: List[Reward] = reward_generator(reward_prompts)#, [[image,],]*n_actions_sampled)
+                        reward_prompts += [value_estimation_prompt_template.format(previous_actions=json.dumps([{k: e[k] for k in e if k != 'think'} for e in next_world_state])),]
+                node.add_children(children=child_nodes)
+                if use_critic == True and use_comparator == False:
+                    rewards: List[Reward] = [Reward.model_validate_json(mllm.chat(messages=[{'role': 'user', 'content': reward_prompt, 'images': image_paths}], model=ollama_model, format=Reward.model_json_schema()).message.content) for reward_prompt in reward_prompts]
+                    print(rewards)
                     for n in range(len(rewards)):
                         rm_data['prompt'] += [reward_prompts[n]]
                         rm_data['completion'] += [rewards[n].model_dump_json()]
                         rm_data['image'] += [image_path,]
-                        child: Node = child_nodes[n]
+                        child: Node = [c for c in node.children if c is child_nodes[n]][0]
                         reward: Reward = rewards[n]
-                        child.policy_value = min(1.0, max(0.0, float(reward.score/10.0)))
+                        child.update_policy_value(min(1.0, max(0.0, float(reward.score/10.0))))
                         child.visits = 1
-                        node.add_child(child)
+                        if use_critic_feedback == True:
+                            child.state[-1]['critic_feedback'] = reward.think
+                        #node.add_child(child)
+                elif use_comparator == True:
+                    candidates = child_nodes.copy()
+                    losers = []
+                    winner_score = 0
+                    score_increment = 1.0/math.log2(len(candidates))
+                    while len(candidates) != 1:
+                        winners = []
+                        random.Random().shuffle(candidates)
+                        winner_score += score_increment
+                        for c_index, candidate in enumerate(candidates):
+                            print(len(candidates), c_index)
+                            if c_index % 2 == 0:
+                                c1 = candidates[c_index]
+                                c2 = candidates[c_index+1]
+                                print('ok1')
+                                previous_actions1 = [dict(action=e['action'], observation=e['observation']) for e in c1.state]
+                                previous_actions2 = [dict(action=e['action'], observation=e['observation']) for e in c2.state]
+                                comparator_prompt = comparator_prompt_template.format(previous_actions_a=previous_actions1, previous_actions_b=previous_actions2)
+                                comparison: Comparison = Comparison.model_validate_json(mllm.chat(messages=[{'role': 'user', 'content': comparator_prompt, 'images': image_paths}], model=ollama_model, format=Comparison.model_json_schema()).message.content)
+                                print(comparison)
+                                if comparison.winner.upper().startswith('A'):
+                                    winner = c1
+                                    loser = c2
+                                elif comparison.winner.upper().startswith('B'):
+                                    winner = c2
+                                    loser = c1
+                                else:
+                                    options = [c1, c2]
+                                    winner = random.Random().choice(options)
+                                    options.pop(options.index(winner))
+                                    loser = options[0]
+                                winner.policy_value = winner_score
+                                winner.visits = 1
+                                winners.append(winner)
+                                loser.visits = 1
+                                losers.append(loser)
+                            else:
+                                continue
+                        candidates = winners
+                    child_nodes = losers + winners
+                    node.add_children(child_nodes)
                 else:
                     for n in range(n_actions_sampled):
                         child: Node = child_nodes[n]
@@ -305,7 +408,7 @@ for i in tqdm.trange(4639):
                         node.add_child(child)
                 if save_dataset != True:
                     success_prompt = success_detection_prompt_template.format(previous_actions=node.state) + image_obs
-                    task_status: TaskStatus = success_detector(success_prompt)#, [image,])
+                    task_status: TaskStatus = TaskStatus.model_validate_json(mllm.chat(messages=[{'role': 'user', 'content': success_prompt, 'images': image_paths}], model=ollama_model, format=TaskStatus.model_json_schema()).message.content)
                     stop_data['prompt'] += [success_prompt,]
                     stop_data['completion'] += [task_status.model_dump_json()]
                     stop_data['image'] += [image_path,]
@@ -318,7 +421,9 @@ for i in tqdm.trange(4639):
                     #    print(sum([1 for e in events if e.is_set()]))
                 else:
                     node.update_win_value(0)
-
+            #obs_inventory, _, _, _ = env.step(['inventory'])
+            #obs[0] += f'\n\nInventory: {obs_inventory}'
+            obs[0] += f'\n\nAvailable Actions: {info["admissible_commands"][0]}'
             print('Observation: ', obs[0])
             print('Admissible Actions: ', info['admissible_commands'][0])
             print('Thinking', end='')
@@ -372,15 +477,20 @@ for i in tqdm.trange(4639):
             #if 'nothing happens' in obs[0].lower():
             #    obs = tuple([f'Invalid action: {action}. Choose one of the following actions instead: {", ".join(info["admissible_commands"][0])}'])
             world_state.append({
+                'available_actions': info['admissible_commands'][0],
                 'think': thought,
                 'action': action,
                 'observation': obs[0]
             })
+            if use_critic_feedback == True:
+                reward_prompt = value_estimation_prompt_template.format(previous_actions=[dict(action=e['action'], observation=e['observation']) for e in world_state])
+                reward: Reward = Reward.model_validate_json(mllm.chat(messages=[{'role': 'user', 'content': reward_prompt, 'images': image_paths}], model=ollama_model, format=Reward.model_json_schema()).message.content)
+                world_state[-1]['critic_feedback'] = reward.think
             done = dones[0]
             info = infos
-            images = []#[Image.fromarray(frame) for frame in env.get_frames()]
+            images = [Image.fromarray(frame[:,:,::-1]) for frame in env.get_frames()]
             counter += 1
-        if counter < (50):
+        if counter < (episode_len):
             success += 1
         episodes += 1
     except BaseException as e:
@@ -397,10 +507,10 @@ for i in tqdm.trange(4639):
             'env_steps': counter
         })
     if save_dataset == True:
-        actor_data['label'] += [counter < 50,] * (len(actor_data['prompt']) - last_len_actor_data)
-        wm_data['label'] += [counter < 50,] * (len(wm_data['prompt']) - last_len_wm_data)
-        rm_data['label'] += [counter < 50,] * (len(rm_data['prompt']) - last_len_rm_data)
-        stop_data['label'] += [counter < 50,] * (len(stop_data['prompt']) - last_len_stop_data)
+        actor_data['label'] += [counter < episode_len,] * (len(actor_data['prompt']) - last_len_actor_data)
+        wm_data['label'] += [counter < episode_len,] * (len(wm_data['prompt']) - last_len_wm_data)
+        rm_data['label'] += [counter < episode_len,] * (len(rm_data['prompt']) - last_len_rm_data)
+        stop_data['label'] += [counter < episode_len,] * (len(stop_data['prompt']) - last_len_stop_data)
         pd.DataFrame.from_dict(data=actor_data).to_json('./actor_dataset/train.jsonl', lines=True, orient='records')
         pd.DataFrame.from_dict(data=wm_data).to_csv('./world_model_dataset/train.csv', sep=';')
         pd.DataFrame.from_dict(data=rm_data).to_csv('./reward_model_dataset/train.csv', sep=';')
